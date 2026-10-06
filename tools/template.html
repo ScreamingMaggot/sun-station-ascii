@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Sun Station — 舷窗 / Porthole ASCII</title>
+<style>
+  :root{ --bg:#04050a; --amber:#f4a62a; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ height:100%; background:var(--bg); overflow:hidden; }
+  #stage{ position:fixed; inset:0; }
+  canvas{ position:absolute; inset:0; display:block; }
+  #gate{ position:absolute; inset:0; display:flex; flex-direction:column;
+         align-items:center; justify-content:center; gap:22px;
+         background:radial-gradient(ellipse at 50% 60%, #1a0f08 0%, #04050a 70%);
+         color:#e9d7bd; cursor:pointer; z-index:20; user-select:none; }
+  #gate h1{ font:600 26px/1.2 ui-monospace,Menlo,Consolas,monospace; letter-spacing:.14em; color:#f4a62a; }
+  #gate p{ font:400 13px/1.7 ui-monospace,Menlo,Consolas,monospace; opacity:.75; max-width:48ch; text-align:center; }
+  #gate .btn{ margin-top:8px; padding:14px 34px; border:1px solid #f4a62a55; border-radius:2px;
+              font:600 14px/1 ui-monospace,Menlo,Consolas,monospace; letter-spacing:.3em; color:#fbd14a; }
+  #gate:hover .btn{ background:#f4a62a11; border-color:#f4a62a; }
+  #gate small{ opacity:.4; letter-spacing:.2em; }
+  #rec{ position:absolute; right:14px; top:14px; z-index:16; cursor:pointer; padding:7px 13px;
+        border:1px solid #f4a62a55; border-radius:2px; background:rgba(3,5,10,.55);
+        color:#fbd14a; font:600 12px/1 ui-monospace,Menlo,Consolas,monospace; letter-spacing:.2em; }
+  #rec:hover{ border-color:#f4a62a; }
+  #rec.on{ color:#e0643a; border-color:#e0643a; }
+  #hud{ position:absolute; left:14px; top:40px; z-index:15; pointer-events:none; white-space:pre-wrap;
+        font:400 11px/1.6 ui-monospace,Menlo,Consolas,monospace; color:#c9b28a; opacity:0; transition:opacity .5s; letter-spacing:.06em; }
+  #hud.show{ opacity:.75; }
+  #hud .ph{ color:#f4a62a; letter-spacing:.18em; }
+  #bigtitle{ position:absolute; left:0; right:0; top:44%; z-index:16; text-align:center; pointer-events:none;
+        font:600 34px/1.15 ui-monospace,Menlo,Consolas,monospace; letter-spacing:.34em; color:#fbd14a;
+        opacity:0; text-shadow:0 0 18px rgba(244,166,42,.45); }
+  #bigtitle small{ display:block; margin-top:12px; font-weight:400; font-size:12px; letter-spacing:.5em; color:#c9b28a; opacity:.8; }
+  #title{ position:absolute; left:0; right:0; top:14px; text-align:center; z-index:15; pointer-events:none;
+          font:400 12px/1 ui-monospace,Menlo,Consolas,monospace; color:#6b5844; opacity:0; transition:opacity .6s; letter-spacing:.28em; }
+  #title.show{ opacity:.6; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="cv"></canvas>
+  <div id="title">T H E &nbsp; S U N &nbsp; S T A T I O N</div>
+  <div id="bigtitle">THE SUN STATION<small>ANDREW PRAHLOW</small></div>
+  <div id="hud"></div>
+  <button id="rec" title="录制整首并导出 webm">● REC</button>
+  <div id="gate">
+    <h1>THE SUN STATION</h1>
+    <p>舷窗视角 · 3D 星系投影 · ASCII 数字艺术<br>音乐特征驱动 ·《星际拓荒》Outer Wilds<br>00:00 航行 → 00:10 变轨入轨 → 00:16 贴近光球层 → 00:25 行星凌日 · 恒星半弧 → 01:48 表面翻滚膨胀 → 02:15 坠入恒星</p>
+    <div class="btn">CLICK&nbsp;TO&nbsp;ENTER</div>
+    <small>建议全屏 · 开启声音</small>
+  </div>
+</div>
+
+<script>
+"use strict";
+window.addEventListener("error",function(e){ try{ document.title="ERR:"+(e.message||e.error); }catch(_){ } });
+const FEAT = __FEATURES_JSON__;
+const AUDIO_B64 = "__AUDIO_B64__";
+const DURATION = __DURATION__;
+
+/* ---------- feature access ---------- */
+const NB=FEAT.nbands, NF=FEAT.nframes, FPS=FEAT.fps;
+const BANDS=(function(){ const bin=atob(FEAT.bands_b64); const a=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) a[i]=bin.charCodeAt(i); return a; })();
+const SC={ rms:Uint8Array.from(FEAT.rms), onset:Uint8Array.from(FEAT.onset),
+           flux:Uint8Array.from(FEAT.flux), cent:Uint8Array.from(FEAT.cent),
+           roll:Uint8Array.from(FEAT.roll), lowhigh:Uint8Array.from(FEAT.lowhigh),
+           pulse:Uint8Array.from(FEAT.pulse) };
+let PERM=null;
+const _map=f=>PERM?PERM[f]:f;
+const lerp=(a,b,k)=>a+(b-a)*k;
+function sampleB(b,tF){ const f0=Math.max(0,Math.min(NF-1,Math.floor(tF))),f1=Math.min(NF-1,f0+1),k=tF-f0;
+  return lerp(BANDS[b*NF+_map(f0)],BANDS[b*NF+_map(f1)],k)/255; }
+function sampleBf(bf,tF){ const b0=Math.max(0,Math.min(NB-1,Math.floor(bf))), b1=Math.min(NB-1,b0+1), k=bf-b0;
+  return lerp(sampleB(b0,tF), sampleB(b1,tF), k); }   // smooth across bands (no row-quantised stripes)
+function sc(n,tF){ const a=SC[n],f0=Math.max(0,Math.min(NF-1,Math.floor(tF))),f1=Math.min(NF-1,f0+1),k=tF-f0;
+  return lerp(a[_map(f0)],a[_map(f1)],k)/255; }
+const BEATS=Float64Array.from(FEAT.beats||[]);
+function beatPos(t){ const n=BEATS.length, spb=60/FEAT.tempo;
+  if(n<2||!isFinite(t)) return t/spb;
+  if(t<=BEATS[0]) return t/spb;
+  if(t>=BEATS[n-1]) return n-1+(t-BEATS[n-1])/((BEATS[n-1]-BEATS[n-2]));
+  let lo=0,hi=n-1; while(lo<hi-1){ const mid=(lo+hi)>>1; if(BEATS[mid]<=t) lo=mid; else hi=mid; }
+  return lo+(t-BEATS[lo])/(BEATS[hi]-BEATS[lo]); }
+
+/* ---------- noise ---------- */
+function hash(n){ n=(n^61)^((n^(-n))>>>9); n=(n+(n*3))|0; n^=n>>>4; n=(n*0x27d4eb2d)|0; n^=n>>>15; return (n>>>0)/4294967295; }
+function vnoise(x){ const i=Math.floor(x),f=x-i,a=hash(i),b=hash(i+1); return lerp(a,b,f*f*(3-2*f)); }
+function fbm(x){ return 0.6*vnoise(x)+0.3*vnoise(x*2.3+11)+0.1*vnoise(x*4.9+37); }
+function ihash(n){ n=(n^61)^(n>>>16); n=(n+(n<<3))|0; n^=n>>>4; n=(n*0x27d4eb2d)|0; n^=n>>>15; return (n>>>0)/4294967295; }
+function vnoise3(x,y,z){ const xi=Math.floor(x),yi=Math.floor(y),zi=Math.floor(z);
+  const xf=x-xi,yf=y-yi,zf=z-zi, u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf),w=zf*zf*(3-2*zf);
+  const H=(i,j,k)=>ihash((i*73856093)^(j*19349663)^(k*83492791));
+  return lerp(lerp(lerp(H(xi,yi,zi),H(xi+1,yi,zi),u),lerp(H(xi,yi+1,zi),H(xi+1,yi+1,zi),u),v),
+              lerp(lerp(H(xi,yi,zi+1),H(xi+1,yi,zi+1),u),lerp(H(xi,yi+1,zi+1),H(xi+1,yi+1,zi+1),u),v),w); }
+function fbm3(x,y,z){ return 0.62*vnoise3(x,y,z)+0.28*vnoise3(x*2.1,y*2.1,z*2.1)+0.10*vnoise3(x*4.3,y*4.3,z*4.3); }
+function sstep(a,b,x){ x=(x-a)/(b-a); x=x<0?0:x>1?1:x; return x*x*(3-2*x); }
+function n3(x,y,z){ return 0.5*fbm(x+y*1.7+z*2.9)+0.3*fbm(x*2.1-y*1.3+z*1.1+20)+0.2*fbm(x*4.3+y*3.7-z*2.3+40); }
+/* UI corruption after falling into the star */
+function glitchC(t){ return sstep(136,150,t); }
+const GLITCH="!@#$%^&*()_+-=[]{};:<>/?\\|~`0123456789ABCDEF#";
+function glitchStr(s,c,seed){ if(c<=0) return s; let o="";
+  for(let i=0;i<s.length;i++){ const h=hash(i*131+seed*977);
+    o += (s[i]===" "? " " : (h<c? GLITCH[(hash(i*367+seed*331)*GLITCH.length)|0] : s[i])); }
+  return o; }
+
+/* ---------- vec3 ---------- */
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+const add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+const mul=(a,s)=>[a[0]*s,a[1]*s,a[2]*s];
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+const len=a=>Math.hypot(a[0],a[1],a[2]);
+const norm=a=>{ const l=len(a)||1; return [a[0]/l,a[1]/l,a[2]/l]; };
+const lerp3=(a,b,k)=>[lerp(a[0],b[0],k),lerp(a[1],b[1],k),lerp(a[2],b[2],k)];
+
+/* ---------- continuous keyframe tracks: Fritsch-Carlson monotone cubic (C1, no zero-slope stalls) ---------- */
+function track(t,kf){ const n=kf.length;
+  if(!kf._d){ const m=new Array(n-1), d=new Array(n);
+    for(let i=0;i<n-1;i++) m[i]=(kf[i+1][1]-kf[i][1])/((kf[i+1][0]-kf[i][0])||1);
+    d[0]=m[0]; d[n-1]=m[n-2];
+    for(let i=1;i<n-1;i++){ if(m[i-1]*m[i]<=0){ d[i]=0; }
+      else { const w1=2*(kf[i][0]-kf[i-1][0])+(kf[i+1][0]-kf[i][0]), w2=(kf[i][0]-kf[i-1][0])+2*(kf[i+1][0]-kf[i][0]);
+             d[i]=(w1+w2)/(w1/m[i-1]+w2/m[i]); } }
+    kf._d=d;
+  }
+  if(t<=kf[0][0]) return kf[0][1];
+  if(t>=kf[n-1][0]) return kf[n-1][1];
+  const d=kf._d; let k=0; while(k<n-1 && kf[k+1][0]<t) k++;
+  const h=kf[k+1][0]-kf[k][0], s=(t-kf[k][0])/h, s2=s*s, s3=s2*s;
+  return (2*s3-3*s2+1)*kf[k][1] + (s3-2*s2+s)*h*d[k] + (-2*s3+3*s2)*kf[k+1][1] + (s3-s2)*h*d[k+1];
+}
+// camera distance (solar radii), position angle, star radius, view-blend, fov(deg), spin boost
+const KF={
+  rc:   [[0,9],[6,7.5],[10,6],[13,4.2],[16,2.4],[20,1.5],[25,1.35],[108,1.32],[116,1.25],[124,1.1],[132,0.95],[135,0.9],[145,0.55],[152,0.25],[158.7,0.05]],
+  theta:[[0,0],[10,2.01],[16,3.42],[25,5.53],[45,10.22],[65,14.91],[85,19.60],[108,24.99],[120,27.81],[135,31.32],[150,34.84],[158.7,36.88]],
+  R:    [[0,1],[108,1],[120,1.16],[135,1.5],[150,2.4],[158.7,3.2]],
+  g:    [[0,0],[108,0],[120,0.28],[135,0.62],[150,1],[158.7,1]],
+  fov:  [[0,52],[135,52],[150,68],[158.7,82]],
+  a:    [[0,0],[8,0],[12,0.25],[16,0.6],[20,0.9],[24,1],[158.7,1]],
+  incl: [[0,0.05],[108,0.05],[135,0.12],[158.7,0.12]],
+  trem:   [[0,0.06],[10,0.1],[16,0.2],[25,0.16],[108,0.22],[116,0.5],[124,0.85],[135,1.1],[146,1.4],[158.7,1.5]],
+  starVis:[[0,1],[10,1],[16,0.6],[25,0.75],[60,1],[100,1],[108,1],[122,0.6],[132,0.15],[140,0],[158.7,0]],
+  pgate:  [[0,0.6],[10,0.7],[16,0.85],[24,1],[30,1],[108,1],[120,0.7],[130,0.15],[134,0],[158.7,0]],
+  whiten: [[0,0],[126,0],[135,0.35],[146,0.85],[153,1],[158.7,1]],
+  integ:  [[0,100],[18,100],[40,99],[80,97],[100,94],[108,90],[116,78],[124,58],[132,32],[138,12],[145,4],[158.7,0]],
+  nova:   [[0,0],[24,0],[32,0.5],[60,0.55],[100,0.7],[112,1.1],[125,1.7],[140,2.3],[152,2.6],[158.7,2.6]]
+};
+function phaseName(t){ return t<10?"DRIFT":t<16?"BURN":t<25?"SKIM":t<108?"ORBIT":t<135?"SWELL":"PLUNGE"; }
+
+/* ---------- camera at time t ---------- */
+function camAt(t){
+  const rc=track(t,KF.rc), th=track(t,KF.theta), R=track(t,KF.R), g=track(t,KF.g), fov=track(t,KF.fov)*Math.PI/180;
+  const inc=track(t,KF.incl);
+  const P=[rc*Math.cos(th), rc*Math.sin(th)*Math.sin(inc), rc*Math.sin(th)*Math.cos(inc)];
+  const radOut=norm(P);
+  const tangent=norm([-Math.sin(th),0,Math.cos(th)]);
+  const Y=[0,1,0];
+  const a=track(t,KF.a);                                   // 0 = far, look at the star; 1 = orbiting, look along the surface
+  const angR=Math.asin(Math.min(0.999, R/rc));             // star's angular radius from here
+  const beta=fov*1.0;                                      // raise the view: star pushed to a low limb arc, sky above
+  const fOrbit=norm(add(mul(tangent,Math.sin(beta)), mul(radOut,-Math.cos(beta))));
+  const fStar=mul(radOut,-1);                              // look straight at the star (approach & plunge)
+  const fApp=norm(lerp3(fStar, fOrbit, a));
+  const uApp=lerp3(Y, radOut, a);
+  let f=norm(lerp3(fApp, fStar, g));                       // plunge re-aims at the star
+  let u=lerp3(uApp, Y, g);
+  u=norm(sub(u, mul(f, dot(u,f))));                         // orthogonalise
+  const r=cross(u,f);
+  const focal=(H/2)/Math.tan(fov/2);
+  return {P,f,u,r,focal,R,inside: rc<R, rc, th, g};
+}
+function project(cam,wp){ const d=sub(wp,cam.P); const zc=dot(d,cam.f); if(zc<=0.02) return null;
+  return [W/2+cam.focal*dot(d,cam.r)/zc, H/2-cam.focal*dot(d,cam.u)/zc, zc]; }
+function projectDir(cam,sdir){ const zc=dot(sdir,cam.f); if(zc<=0.02) return null;
+  return [W/2+cam.focal*dot(sdir,cam.r)/zc, H/2-cam.focal*dot(sdir,cam.u)/zc]; }
+
+/* ---------- planets (3D orbits, beat-locked) ---------- */
+const PLANETS=[
+  {a:2.2, BPB:120, ph:0.15, inc:0.14,  pr:0.16, kind:4, band:5.0},   // rust rocky
+  {a:3.1, BPB:180, ph:0.55, inc:-0.18, pr:0.26, kind:1, band:3.0},   // amber gas giant
+  {a:4.0, BPB:260, ph:0.30, inc:0.26,  pr:0.18, kind:3, band:6.0},   // teal ocean world
+  {a:5.2, BPB:340, ph:0.72, inc:-0.08, pr:0.32, kind:1, band:2.2},   // large banded gas giant
+  {a:6.5, BPB:440, ph:0.05, inc:0.34,  pr:0.20, kind:0, band:7.0},   // blue ice giant
+  {a:7.8, BPB:560, ph:0.45, inc:0.04,  pr:0.22, kind:4, band:4.5}    // outer rust world
+];
+function planetPos(p,bp){ const ang=2*Math.PI*bp/p.BPB+p.ph*6.283;
+  return [p.a*Math.cos(ang), p.a*Math.sin(ang)*Math.sin(p.inc), p.a*Math.sin(ang)*Math.cos(p.inc)]; }
+
+/* ---------- starfield (fixed celestial directions) ---------- */
+const NSTAR=420, STARSD=new Float32Array(NSTAR*3), STARPH=new Float32Array(NSTAR);
+(function(){ for(let i=0;i<NSTAR;i++){ let x=hash(i*3+1)*2-1, y=hash(i*3+2)*2-1, z=hash(i*3+3)*2-1;
+  let l=Math.hypot(x,y,z); if(l<1e-3){ x=1;y=0;z=0;l=1; }
+  STARSD[i*3]=x/l; STARSD[i*3+1]=y/l; STARSD[i*3+2]=z/l; STARPH[i]=hash(i*7+5); } })();
+
+/* ---------- grid + palette ---------- */
+const cv=document.getElementById("cv"), ctx=cv.getContext("2d");
+const MONO='"Lucida Console","Consolas","DejaVu Sans Mono",ui-monospace,monospace';
+let W=0,H=0,cellW=0,cellH=0,cols=0,rows=0,fs=0,DPR=1,FS_OVERRIDE=0;
+const val=new Float32Array(220000), kind=new Uint8Array(220000);
+const COOLC=["#101827","#223047","#3a4a63","#5a6f96","#8aa0c4"];
+const WARMC=["#2a1408","#4d2309","#7a3410","#a94a13","#d9691a","#e88a1f","#f4a62a","#fbc23e","#ffe07a","#fff2c0","#ffffff"];
+const DISC =["#ffe9a0","#fff3cf","#ffffff"];
+const EARTHC=["#0e2a24","#15463a","#1f6b57","#2f9b78","#5fc9a0","#a0e8cf"];
+const RUSTC =["#2a120a","#4d2010","#7a3318","#b5502a","#e07a45","#ffb27a"];
+const PALETTE=[].concat(COOLC,WARMC,DISC,EARTHC,RUSTC);
+const OC=0, OW=COOLC.length, OD=OW+WARMC.length, OE=OD+DISC.length, OR=OE+EARTHC.length, PALN=PALETTE.length;
+const RAMP_WARM=" .:~-+*oa%x&#8@";
+const RAMP_COOL="     .,;'.";
+const RAMP_DIS ="  _/|\\-+";
+function codeAt(ramp,v){ const i=Math.max(0,Math.min(ramp.length-1,Math.round(v*(ramp.length-1)))); return ramp.charCodeAt(i); }
+function charPal(k,v){
+  if(k===1){ return [codeAt(RAMP_WARM,v), OW+Math.round(Math.min(1,v)*(WARMC.length-1))]; }
+  if(k===3){ return [codeAt(RAMP_WARM,v), OE+Math.round(Math.min(1,v)*(EARTHC.length-1))]; }
+  if(k===4){ return [codeAt(RAMP_WARM,v), OR+Math.round(Math.min(1,v)*(RUSTC.length-1))]; }
+  if(k===2){ return [codeAt(RAMP_DIS,v), OD+Math.round(Math.min(1,v)*(DISC.length-1))]; }
+  return [codeAt(RAMP_COOL,v), OC+Math.round(Math.min(1,v)*(COOLC.length-1))];
+}
+function put(c,r,v,k,force){ if(c<0||r<0||c>=cols||r>=rows) return; const i=c+r*cols; if(force||v>=val[i]){ val[i]=v; kind[i]=k; } }
+let buf=null, touched=null;
+let lastT=null;
+function resize(){
+  DPR=Math.min(2,window.devicePixelRatio||1);
+  const cw=window.innerWidth||document.documentElement.clientWidth||1280;
+  const ch=window.innerHeight||document.documentElement.clientHeight||720;
+  W=cv.width=Math.floor(cw*DPR); H=cv.height=Math.floor(ch*DPR);
+  cv.style.width=cw+"px"; cv.style.height=ch+"px";
+  fs=FS_OVERRIDE>0 ? FS_OVERRIDE : Math.max(9,Math.round(11*DPR)); ctx.font=fs+"px "+MONO;
+  const m=ctx.measureText("@MW#08%"); cellW=(m.width/7)||fs*0.6; cellH=fs*1.12;
+  cols=Math.min(560,Math.floor(W/cellW)); rows=Math.min(170,Math.floor(H/cellH));
+  buf=new Array(PALN); touched=new Uint8Array(PALN*rows);
+  for(let p=0;p<PALN;p++){ const a=new Array(rows); for(let r=0;r<rows;r++) a[r]=new Uint16Array(cols).fill(32); buf[p]=a; }
+  if(typeof lastT==="number") render(lastT);   // canvas.width reset wipes the bitmap; repaint
+}
+
+/* ---------- render ---------- */
+function render(t){
+  lastT=t;
+  val.fill(0,0,cols*rows); kind.fill(0,0,cols*rows);
+  const tF=t*FPS;
+  const rms=sc("rms",tF),onset=sc("onset",tF),flux=sc("flux",tF),
+        lowhigh=sc("lowhigh",tF),hiE=(sampleB(NB-1,tF)*0.4+sampleB(NB-2,tF)*0.3+sc("cent",tF)*0.3);
+  const heat=Math.min(1,0.4+lowhigh*0.7);
+  const cam=camAt(t);
+  const ph=phaseName(t);
+  const whiten = track(t,KF.whiten);
+
+  // tremor (churn) shifts the sun's projected centre
+  const trem = track(t,KF.trem);
+  let sunX=0,sunY=0,sunRp=0, sunVisible=false;
+  const insideFull = cam.inside;
+  const endFade = t>150 ? Math.max(0,1-(t-150)/8) : 1;   // consumed by the star
+  if(insideFull){
+    sunX=W*0.5; sunY=H*1.6; sunRp=4*Math.max(W,H); sunVisible=true;   // star surrounds us -> fill screen (continuous with approach)
+  } else {
+    const sunC = project(cam,[0,0,0]);
+    if(sunC){ const a=Math.asin(Math.min(1,cam.R/(len(cam.P)||1)));
+      sunRp=cam.focal*Math.tan(a);
+      sunX=sunC[0]+Math.sin(t*13.3)*onset*trem*3*DPR;
+      sunY=sunC[1]+Math.sin(t*9.1)*onset*trem*3*DPR;
+      sunVisible = sunRp>2 && sunX>-sunRp && sunX<W+sunRp && sunY>-sunRp && sunY<H+sunRp; }
+  }
+
+  // ---------- starfield with motion trails ----------
+  if(!insideFull){
+    const cam2=camAt(t+0.05);
+    const starVis = track(t,KF.starVis);
+    if(starVis>0.02){
+      for(let i=0;i<NSTAR;i++){
+        const s=[STARSD[i*3],STARSD[i*3+1],STARSD[i*3+2]];
+        const p=projectDir(cam,s); if(!p) continue;
+        if(sunVisible){ const dx=p[0]-sunX,dy=p[1]-sunY; if(dx*dx+dy*dy<sunRp*sunRp) continue; }
+        const tw=0.5+0.5*Math.sin(t*(2+STARPH[i]*6)+STARPH[i]*20+hiE*5);
+        const v=(0.30+0.6*tw)*starVis;
+        const c0=(p[0]/cellW)|0, r0=(p[1]/cellH)|0;
+        put(c0,r0,v,0);
+        const p2=projectDir(cam2,s);                   // trail when the sky is sweeping
+        if(p2){ const mx=p[0]-p2[0], my=p[1]-p2[1]; const md=Math.hypot(mx,my);
+          if(md>cellW*0.9){ const steps=Math.min(6,(md/cellW)|0);
+            for(let k=1;k<=steps;k++){ const q=k/steps; put((( p[0]-mx*q)/cellW)|0,((p[1]-my*q)/cellH)|0, v*0.5*(1-q*0.6),0); } } }
+      }
+    }
+  }
+
+  // ---------- supernovae on the musical pulse (sky-anchored, small, sparse early -> dense late) ----------
+  if(!insideFull){
+    const starVis=track(t,KF.starVis);
+    if(starVis>0.15){
+      const bps=FEAT.tempo/60, BURST=2.3, bpS=t*bps;      // burst duration (x2.7 of 0.85s)
+      for(let b=Math.floor(bpS-BURST*bps); b<=Math.floor(bpS); b++){
+        const age=(bpS-b)/bps; if(age<0||age>=BURST) continue;
+        const bIdx=((b%2000000)+2000000), bt=Math.max(0,b/bps);
+        const rate=track(bt,KF.nova);                     // detonations per beat (0 before orbit insertion)
+        if(rate<=0) continue;
+        let cnt=Math.floor(rate); if(hash(bIdx*53+7)<(rate-cnt)) cnt++;
+        if(cnt<=0) continue;
+        const bE=sc("onset",bt*FPS), camB=camAt(bt);
+        for(let j=0;j<cnt;j++){
+          const ox=(hash(bIdx*131+j*379)*2-1)*0.62, oy=(hash(bIdx*197+j*613)*2-1)*0.5;
+          const dirv=norm(add(add(mul(camB.f,1),mul(camB.r,ox)),mul(camB.u,oy)));  // FIXED celestial direction
+          const p=projectDir(cam,dirv); if(!p) continue;   // projected with the current camera -> drifts with the sky
+          let sx=p[0], sy=p[1];
+          if(sx<14*DPR||sx>W-14*DPR||sy<14*DPR||sy>H*0.66) continue;
+          if(sunVisible){ const dx=sx-sunX,dy=sy-sunY,dd=Math.hypot(dx,dy)||1;
+            if(dd<sunRp*1.05){ sx=sunX+dx/dd*(sunRp*1.05); sy=sunY+dy/dd*(sunRp*1.05); } }
+          const u=age/BURST, fade=1-u, P=(0.35+0.55*bE)*starVis;
+          const cc=(sx/cellW)|0, rr=(sy/cellH)|0;
+          put(cc,rr,Math.min(1,0.85*P*fade+0.18),2);                         // brief white-hot flash
+          const Rr=0.6+u*2.5, nf=5;                                        // small expanding shard ring
+          for(let k=0;k<nf;k++){ const an=k*1.2566+hash(bIdx*7+j*3)*6.2832;
+            put(cc+Math.round(Math.cos(an)*Rr), rr+Math.round(Math.sin(an)*Rr), Math.min(1,0.7*P*fade),2);
+          }
+        }
+      }
+    }
+  }
+
+  // ---------- corona: thin limb-hugging glow + prominence loops rising into the sky ----------
+  if(sunVisible && !insideFull){
+    const corR=sunRp*(1+(0.16+hiE*0.34));                  // hugs the limb (no big halo -> not a comet)
+    const cr0=Math.max(0,Math.floor((sunY-corR)/cellH)), cr1=Math.min(rows-1,Math.ceil((sunY+corR)/cellH));
+    const cc0=Math.max(0,Math.floor((sunX-corR)/cellW)), cc1=Math.min(cols-1,Math.ceil((sunX+corR)/cellW));
+    for(let r=cr0;r<=cr1;r++){ const y=r*cellH+cellH*0.5;
+      for(let c=cc0;c<=cc1;c++){ const x=c*cellW+cellW*0.5; const dx=x-sunX,dy=y-sunY; const dist=Math.hypot(dx,dy);
+        if(dist<=sunRp*0.995) continue;
+        const ang=Math.atan2(dy,dx);
+        const sang=ang + cam.th*1.3;                       // corona spins with the star as we orbit -> rotation cue
+        const strm=0.5+0.5*Math.sin(sang*5+fbm(sang*1.8+t*0.06)*4);
+        const streamer=0.4+0.6*strm;
+        const h=(dist-sunRp)/(corR-sunRp);                 // 0 limb .. 1 outer edge
+        const glow=Math.exp(-h*5.5)*(0.5+0.5*streamer);     // tight to limb
+        let v=glow*(0.45+rms*0.6)*(0.6+heat*0.5)*endFade;
+        // prominence loops: bright arcs erupting from active longitudes
+        const loop=Math.pow(Math.max(0,1-h/0.9),1.7)*Math.pow(streamer,2.2);
+        v+=loop*(0.35+hiE*0.75)*endFade;
+        if(v>0.02) put(c,r,Math.min(1,v),1);
+      } }
+  }
+
+  // ---------- photosphere: physical sphere -> granulation + sunspots + limb darkening ----------
+  if(sunVisible){
+    const R=cam.R, P=cam.P, Pc=dot(P,P)-R*R;
+    const fillF=Math.max(0,Math.min(1,(cam.rc/cam.R-1)/0.35));   // ->0 as the star fills the view (smooth into insideFull)
+    const r0=Math.max(0,Math.floor((sunY-sunRp)/cellH)), r1=Math.min(rows-1,Math.ceil((sunY+sunRp)/cellH));
+    const c0=Math.max(0,Math.floor((sunX-sunRp)/cellW)), c1=Math.min(cols-1,Math.ceil((sunX+sunRp)/cellW));
+    for(let r=r0;r<=r1;r++){
+      const y=r*cellH+cellH*0.5, ry=(H/2-y)/cam.focal;
+      for(let c=c0;c<=c1;c++){
+        const x=c*cellW+cellW*0.5; const dx=x-sunX,dy=y-sunY; const d2=dx*dx+dy*dy;
+        if(d2>sunRp*sunRp) continue;
+        const vert=Math.sqrt(d2)/sunRp;
+        let gran=0, spot=0, plage=0, mu=1;
+        if(insideFull){
+          const nx=x/cellW, ny=y/cellH;
+          gran=(fbm(nx*0.11+ny*0.07+t*0.4)+fbm(ny*0.13-nx*0.05-t*0.2)*0.7-0.85)*1.4;
+          const sp=fbm(nx*0.06-ny*0.05-t*0.1+30); spot=sp>0.78?(sp-0.78)*2.4:0;
+          mu=1-0.3*vert;
+        } else {
+          const rx=(x-W/2)/cam.focal;
+          const dir=norm(add(add(cam.f,mul(cam.r,rx)),mul(cam.u,ry)));
+          const b=dot(P,dir), disc=b*b-Pc;
+          if(disc<0) continue;
+          const t0=-b-Math.sqrt(disc);
+          const hx=P[0]+dir[0]*t0, hy=P[1]+dir[1]*t0, hz=P[2]+dir[2]*t0;   // surface point (scrolls as we orbit)
+          const K=4.2;
+          gran=(fbm3(hx*K+t*0.05, hy*K, hz*K)-0.5)*2.2;      // true 3D granulation cells (no planar stripes)
+          const ar=fbm3(hx*0.9+3, hy*0.9, hz*0.9);            // large active regions fixed to the surface -> sweep as we orbit
+          spot=ar>0.80?(ar-0.80)*3.0:0;                    // rare, small sunspots
+          plage=(ar>0.68 && ar<=0.80)?(0.80-ar)*1.6:0;     // bright faculae/plage around them
+          const inv=1/(Math.hypot(hx,hy,hz)||1);
+          const mu2=(hx*(P[0]-hx)+hy*(P[1]-hy)+hz*(P[2]-hz))*(inv*R);
+          mu=Math.min(1,Math.max(0,mu2));
+        }
+        const vscr=r/rows;
+        const e=sampleBf((1-vscr)*(NB-1), tF);            // smooth spectral tint (low freq at bottom)
+        const ld=insideFull?1:(1-0.6*fillF*(1-mu));        // physical limb darkening, fades out as the star fills the frame
+        let v=0.52 + gran*0.66 + plage*0.5 - spot*0.55 + (e-0.5)*0.26;   // granulation dominates; audio is a gentle tint
+        v=Math.max(0.32,v);                                // the photosphere is never black
+        v*=ld;
+        const edge=Math.max(0,1-Math.abs(vert-0.95)*7); v+=edge*(0.4+rms*0.6)*0.5*fillF; // chromosphere limb line
+        v+=cam.g*(1-Math.min(1,Math.hypot(x-W*0.5,y-H*0.5)/(0.5*Math.hypot(W,H))))*0.5;
+        v*=(0.72+heat*0.22+rms*0.12)*endFade;   // star is always luminous; audio modulates activity, not on/off
+        put(c,r,Math.max(0,Math.min(1.15,v)),1);
+      }
+    }
+  }
+
+  // ---------- planets: lit spheres, clipped by the star's limb (no transits from a close orbit) ----------
+  if(!insideFull){
+    const bp=t*FEAT.tempo/60;                              // steady tempo-locked advance (no beat-detection jitter)
+    const gate = track(t,KF.pgate);
+    if(gate>0.02){
+      const R=cam.R, P=cam.P, Pc=dot(P,P)-R*R;
+      for(const p of PLANETS){
+        const wp=planetPos(p,bp); const dist=len(sub(wp,P));
+        const pr=project(cam,wp); if(!pr) continue;
+        const ang=Math.asin(Math.min(1,p.pr/dist)); const rp=cam.focal*Math.tan(ang);
+        const pcx=pr[0],pcy=pr[1];
+        const sunScr=project(cam,[0,0,0]);                 // star centre on screen -> day/night terminator
+        let sdx=0,sdy=-1; if(sunScr){ sdx=sunScr[0]-pcx; sdy=sunScr[1]-pcy; } const sl=Math.hypot(sdx,sdy)||1; sdx/=sl; sdy/=sl;
+        const ccx=(pcx/cellW)|0, ccy=(pcy/cellH)|0, rc=Math.ceil(rp*1.35/cellW)+1;
+        const qp=sub(wp,P), qq=dot(qp,qp)-p.pr*p.pr;
+        for(let c=ccx-rc;c<=ccx+rc;c++)for(let r=ccy-rc;r<=ccy+rc;r++){
+          if(c<0||r<0||c>=cols||r>=rows) continue;
+          const x=c*cellW+cellW*0.5,y=r*cellH+cellH*0.5; const dx=x-pcx,dy=y-pcy; const d=Math.hypot(dx,dy);
+          if(d>rp*1.35) continue;
+          const rx=(x-W/2)/cam.focal, ry=(H/2-y)/cam.focal;
+          const dir=norm(add(add(cam.f,mul(cam.r,rx)),mul(cam.u,ry)));
+          const bs=dot(P,dir), dsc=bs*bs-Pc; const tStar=dsc>=0? -bs-Math.sqrt(dsc):Infinity;
+          const bpd=dot(qp,dir), dp=bpd*bpd-qq; if(dp<0) continue; const tPl=bpd-Math.sqrt(dp);
+          if(tPl>tStar) continue;                            // behind the star -> hidden (clipped by the limb)
+          const overStar = tStar<Infinity;                   // in front of the star disc -> transit (only possible from far out)
+          const s=(dx*sdx+dy*sdy)/rp;                        // -1..1 toward the star (lit side)
+          if(d<=rp){
+            if(overStar){ put(c,r,0.14,0,true); if(d>rp*0.8) put(c,r,0.8*sstep(0.8,1.0,d/rp)*gate,p.kind,true); continue; }
+            const mu=Math.sqrt(Math.max(0,1-(d/rp)*(d/rp)));
+            const band=0.5+0.5*Math.sin((dy/rp)*p.band + fbm(dx/rp*2+dy/rp*3+t*0.2)*4.0);
+            const day=sstep(-0.35,0.5,s);
+            let v=(0.24+0.72*day*mu)*(0.62+0.55*band)*gate;
+            const rim=sstep(0.74,1.0,d/rp)*sstep(-0.1,0.6,s);
+            v+=rim*0.6*gate;
+            put(c,r,Math.min(1,v),p.kind);
+          } else {
+            const halo=sstep(1.35,0.99,d/rp)*sstep(-0.4,0.7,s);
+            if(halo>0.02) put(c,r,halo*0.5*gate,p.kind);
+          }
+        }
+      }
+    }
+  }
+
+  // ---------- porthole vignette ----------
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+    const dx=c/cols-0.5,dy=r/rows-0.5,rad=Math.hypot(dx*1.12,dy);
+    let m=1-Math.pow(Math.max(0,rad-0.5)/0.5,2.1)*0.9; if(m<0)m=0;
+    const i=c+r*cols; val[i]*=m;
+  }
+  // porthole rim: faint circular window edge, visible only over the dark sky
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+    const dx=c/cols-0.5,dy=r/rows-0.5,rad=Math.hypot(dx*1.12,dy);
+    if(rad>0.455 && rad<0.50) put(c,r,0.14,0);
+  }
+
+  // ---------- rasterize ----------
+  touched.fill(0);
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+    const i=c+r*cols, v=val[i]; if(v<=0.02) continue;
+    const k=kind[i]; let vv=Math.min(1,v);
+    if(whiten>0 && k===1) vv=Math.min(1,vv*(1+whiten*0.7));
+    const gp=charPal(k,vv), g=gp[0]; if(g===32) continue; const p=gp[1];
+    buf[p][r][c]=g; touched[p*rows+r]=1;
+  }
+  ctx.fillStyle="#04050a"; ctx.fillRect(0,0,W,H);
+  ctx.font=fs+"px "+MONO; ctx.textBaseline="top";
+  for(let p=0;p<PALN;p++){ ctx.fillStyle=PALETTE[p];
+    for(let r=0;r<rows;r++){ if(!touched[p*rows+r]) continue;
+      ctx.fillText(String.fromCharCode.apply(null,buf[p][r]),1,r*cellH); buf[p][r].fill(32); } }
+  drawMinimap(t,cam);
+  drawHudStatus(t,cam);
+  return {rms,onset,flux,lowhigh,heat,ph,rc:cam.rc};
+}
+/* ---------- bottom-left HULL STATUS panel (integrity + external temperature) ---------- */
+function fmtTemp(v){ if(v>=1e6) return ">"+(v/1e6).toFixed(1)+" MK";
+  v=Math.round(v); return v.toString().replace(/\B(?=(\d{3})+(?!\d))/g,",")+" K"; }
+function drawHudStatus(t,cam){
+  const ms=Math.max(11,Math.round(12.5*DPR));
+  ctx.font=ms+"px "+MONO; ctx.textBaseline="top";
+  const cwm=ctx.measureText("@MW#08%").width/7, lh=ms*1.4;   // true monospace advance -> frame matches text
+  const W2=34, x0=16*DPR, y0=H-(6*lh)-16*DPR, w=(W2-1)*cwm, h=6*lh;
+  const cor=glitchC(t); if(cor>=0.99) return;              // UI destroyed after falling into the star
+  ctx.globalAlpha=1-sstep(0.55,1,cor); const seed=Math.floor(t*18), G=s=>glitchStr(s,cor,seed);
+  const on=sc("onset",t*FPS);
+  let integ=Math.round(Math.max(0,Math.min(100, track(t,KF.integ)-on*4)));
+  const BW=12, fill=(integ/100*BW)|0, bar="["+"#".repeat(fill)+".".repeat(BW-fill)+"]";
+  const close=cam.inside?1.6:(cam.R/cam.rc);
+  let temp=380+5200*Math.pow(Math.max(0,close),3)+Math.max(0,(t-108))*4400;
+  if(cam.inside) temp=Math.max(1.2e6, 1.2e6+(t-135)*(t-135)*1.1e5);
+  const crit=integ<40, warn=integ<70;
+  const ic=crit?"#e0643a":warn?"#f4a62a":"#5fc9a0";
+  const tc=temp>2e5?"#e0643a":temp>2e4?"#f4a62a":"#c9b28a";
+  ctx.fillStyle="rgba(3,5,10,0.90)"; ctx.fillRect(x0-6,y0-6,w+12,h+12);
+  ctx.fillStyle=crit&&((t*3)%1<0.5)?"#e0643a":"#3a4a63";
+  let bt="+"; for(let i=1;i<W2-1;i++) bt+="-"; bt+="+";
+  ctx.fillText(G(bt),x0,y0); ctx.fillText(G(bt),x0,y0+5*lh);
+  for(let r=1;r<5;r++){ ctx.fillText(G("|"),x0,y0+r*lh); ctx.fillText(G("|"),x0+(W2-1)*cwm,y0+r*lh); }
+  ctx.fillStyle="#7d8fb0"; ctx.fillText(G("HULL STATUS"),x0+cwm*2,y0+lh);
+  ctx.fillStyle="#c9b28a"; ctx.fillText(G("INTEGRITY"),x0+cwm,y0+2*lh);
+  ctx.fillStyle=ic; ctx.fillText(G(bar+" "+integ+"%"),x0+cwm*12,y0+2*lh);
+  ctx.fillStyle="#c9b28a"; ctx.fillText(G("EXT TEMP"),x0+cwm,y0+3*lh);
+  ctx.fillStyle=tc; ctx.fillText(G(fmtTemp(temp)),x0+cwm*12,y0+3*lh);
+  const st = crit ? "!! STRUCTURAL FAILURE !!" : warn ? "WARNING: HULL STRESS" : "NOMINAL";
+  ctx.fillStyle=crit?"#e0643a":warn?"#f4a62a":"#7d8fb0";
+  ctx.fillText(G(st),x0+cwm*2,y0+4*lh); ctx.globalAlpha=1;
+}
+/* ---------- system minimap (bottom-right, top-down) ---------- */
+function drawMinimap(t,cam){
+  const mm=Math.max(170*DPR, Math.min(Math.min(W,H)*0.34, W*0.46));
+  const mmW=mm, mmH=mm*0.72, x0=W-mmW-14*DPR, y0=H-mmH-14*DPR;
+  const ms=Math.max(10,Math.round(11*DPR));
+  ctx.font=ms+"px "+MONO; ctx.textBaseline="top";
+  const cw=ctx.measureText("@MW#08%").width/7, lh=ms*1.15;   // true monospace advance
+  const cor=glitchC(t); if(cor>=0.99) return;               // UI destroyed after falling into the star
+  ctx.globalAlpha=1-sstep(0.55,1,cor); const seed=Math.floor(t*18), G=s=>glitchStr(s,cor,seed);
+  ctx.fillStyle="rgba(3,5,10,0.90)"; ctx.fillRect(x0-3,y0-3,mmW+6,mmH+6);
+  const bc=Math.max(6,(mmW/cw)|0), br=Math.max(4,(mmH/lh)|0);
+  ctx.fillStyle="#3a4a63";
+  let top="+"; for(let i=1;i<bc-1;i++) top+="-"; top+="+";
+  ctx.fillText(G(top),x0,y0); ctx.fillText(G(top),x0,y0+(br-1)*lh);
+  for(let r=1;r<br-1;r++){ ctx.fillText(G("|"),x0,y0+r*lh); ctx.fillText(G("|"),x0+(bc-1)*cw,y0+r*lh); }
+  ctx.fillStyle="#7d8fb0"; ctx.fillText(G("SYSTEM"),x0+cw*2,y0+lh*0.1);
+  const cx=x0+mmW/2, cy=y0+mmH*0.50, RMAX=8.6, scl=(Math.min(mmW,mmH)*0.44)/RMAX;
+  const pcx=o=>cx+o[0]*scl, pcy=o=>cy-o[2]*scl;
+  // orbit rings (use each planet's true inclined orbit so markers sit on them)
+  ctx.fillStyle="#2a3a58";
+  for(const p of PLANETS){ for(let a=0;a<6.2832;a+=0.14){
+    if(cor>0 && hash(a*97+p.a*13+seed)<cor*0.9) continue;    // dots drop out as the UI corrupts
+    const ox=p.a*Math.cos(a), oy=p.a*Math.sin(a)*Math.sin(p.inc), oz=p.a*Math.sin(a)*Math.cos(p.inc);
+    ctx.fillText(".", cx+ox*scl, cy-oz*scl); } }
+  // star
+  ctx.fillStyle="#f4a62a"; ctx.fillText(G("O"),cx-cw*0.5,cy-lh*0.5);
+  // planets (coloured by kind)
+  const bp=t*FEAT.tempo/60, PC={0:"#8aa0c4",1:"#f4a62a",3:"#5fc9a0",4:"#e07a45"};
+  for(const p of PLANETS){ const wp=planetPos(p,bp); ctx.fillStyle=PC[p.kind]||"#fff";
+    ctx.fillText(G("o"),pcx(wp)-cw*0.5,pcy(wp)-lh*0.5); }
+  // camera + heading
+  const px=pcx(cam.P), py=pcy(cam.P); ctx.fillStyle="#ffffff"; ctx.fillText(G("+"),px-cw*0.5,py-lh*0.5);
+  const f=cam.f, fl=Math.hypot(f[0],f[2])||1, hx=f[0]/fl, hz=f[2]/fl;
+  ctx.fillStyle="#c9b28a";
+  for(let k=1;k<=5;k++) ctx.fillText(G("*"), px+hx*k*cw, py-hz*k*cw);
+  ctx.globalAlpha=1;
+}
+function dx0(c,sunX,sunRp){ const x=c*cellW+cellW*0.5; return x-sunX; }
+
+/* ---------- loop ---------- */
+let audio=null,useFallback=false,t0=0,running=false;
+const hud=document.getElementById("hud"),title=document.getElementById("title"),bigtitle=document.getElementById("bigtitle");
+function titleOpacity(t){ return sstep(26,30,t)*(1-sstep(37,43,t)); }   // reveal after orbit insertion, then fade
+const PH_LABEL={DRIFT:"航行 DRIFT",BURN:"变轨入轨 BURN",SKIM:"贴临光球 SKIM",ORBIT:"环绕 ORBIT",SWELL:"膨胀 SWELL",PLUNGE:"坠入 PLUNGE"};
+const _esc=x=>x.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+function paintDom(t,s){
+  const cor=glitchC(t), seed=Math.floor(t*18), g=x=> cor>0 ? _esc(glitchStr(x,cor,seed)) : x;
+  hud.classList.add("show"); title.classList.add("show");
+  const fad=1-sstep(0.55,1,cor);
+  bigtitle.style.opacity=(titleOpacity(t)*fad).toFixed(3);
+  title.style.opacity=(fad*0.6).toFixed(3);
+  hud.style.opacity=(fad*0.75).toFixed(3);
+  hud.innerHTML='<span class="ph">'+(PH_LABEL[s.ph]||s.ph)+'</span> '+g(fmt(t)+" / "+fmt(DURATION))+
+    "\n"+g("rms "+s.rms.toFixed(2)+"  onset "+s.onset.toFixed(2)+"  bass "+(((s.lowhigh+1)/2*100)|0)+"%  r="+s.rc.toFixed(2)+"R\u2609");
+}
+function frame(){
+  window.__frames++;
+  const t=useFallback?(performance.now()-t0)/1000:Math.min(audio.currentTime,DURATION);
+  try{ paintDom(t,render(t)); }catch(e){ /* never let one bad frame kill the loop */ }
+  if(running) requestAnimationFrame(frame);
+}
+function fmt(x){ x=Math.max(0,x); const m=(x/60)|0,s=(x%60)|0; return (m<10?"0":"")+m+":"+(s<10?"0":"")+s; }
+function start(useAudio){ running=true; useFallback=!useAudio; t0=performance.now(); requestAnimationFrame(frame); }
+
+/* ---------- verification API ---------- */
+window.__renderAt=render; window.__permute=a=>{PERM=a;}; window.__resetPerm=()=>{PERM=null;};
+window.__dims=()=>({cols,rows,cellW,cellH,fs,DPR}); window.__DUR=DURATION;
+window.__setFont=px=>{ FS_OVERRIDE=px; resize(); };   // density control (smaller px -> finer/denser grid)
+window.__phase=phaseName; window.__beatPos=beatPos; window.__camAt=camAt;
+window.__stop=()=>{running=false;}; window.__frames=0;
+window.__shot=t=>{running=false; render(t);};
+window.__exportFrame=t=>{ running=false; paintDom(t,render(t)); return true; };   // deterministic frame for offline export
+window.__planetInfo=function(t){ const cm=camAt(t), bp=t*FEAT.tempo/60, o=[]; const Pc=dot(cm.P,cm.P)-cm.R*cm.R;
+  for(const p of PLANETS){ const wp=planetPos(p,bp); const prj=project(cm,wp); if(!prj) continue;
+    const dist=len(sub(wp,cm.P)); const rp=cm.focal*Math.tan(Math.asin(Math.min(1,p.pr/dist)));
+    const dir=norm(sub(wp,cm.P)), bs=dot(cm.P,dir), dsc=bs*bs-Pc; const occl=dsc>=0&&(-bs-Math.sqrt(dsc))>0;
+    o.push({kind:p.kind,x:Math.round(prj[0]),y:Math.round(prj[1]),rp:Math.round(rp),occl,on:prj[0]>0&&prj[0]<W&&prj[1]>0&&prj[1]<H&&!occl}); }
+  return o; };
+window.__seek=t=>{ if(audio){try{audio.currentTime=t;}catch(e){}} t0=performance.now()-t*1000; useFallback=!audio; };
+window.__bench=(t,n)=>{ n=n||60; const s=performance.now(); for(let i=0;i<n;i++) render(t); return (performance.now()-s)/n; };
+window.__pixel=t=>{ window.__shot(t); const d=ctx.getImageData(0,0,W,H).data;
+  const bw=Math.max(1,(W/180)|0),bh=Math.max(1,(H/120)|0),nc=(W/bw)|0,nr=(H/bh)|0,out=new Float32Array(nc*nr);
+  for(let by=0;by<nr;by++)for(let bx=0;bx<nc;bx++){ let s=0,cnt=0; const x0=bx*bw,y0=by*bh,x1=Math.min(W,x0+bw),y1=Math.min(H,y0+bh);
+    for(let y=y0;y<y1;y+=2)for(let x=x0;x<x1;x+=2){ const i=(y*W+x)*4; s+=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]; cnt++; } out[by*nc+bx]=cnt?s/cnt/255:0; }
+  return {img:out,nc,nr}; };
+window.__mean=t=>{ const p=window.__pixel(t); let s=0; for(let i=0;i<p.img.length;i++)s+=p.img[i]; return s/p.img.length; };
+window.__grid=t=>{ window.__shot(t); return {cols,rows,val:Array.from(val.subarray(0,cols*rows)),kind:Array.from(kind.subarray(0,cols*rows))}; };
+window.__dump=t=>{ window.__shot(t); let out=""; for(let r=0;r<rows;r++){ let line=""; for(let c=0;c<cols;c++){ const v=val[c+r*cols];
+  if(v<=0.02){ line+=" "; continue; } const gp=charPal(kind[c+r*cols],Math.min(1,v)); line+=(gp[0]===32?" ":String.fromCharCode(gp[0])); } out+=line+"\n"; } return out; };
+
+document.getElementById("gate").addEventListener("click",()=>{
+  document.getElementById("gate").style.display="none";
+  try{ audio=new Audio("data:audio/mpeg;base64,"+AUDIO_B64); audio.preload="auto";
+    audio.addEventListener("error",()=>{audio=null;start(false);});
+    audio.play().then(()=>start(true)).catch(()=>{audio=null;start(false);});
+  }catch(e){ audio=null; start(false); }
+},{once:true});
+
+/* ---------- video export: record canvas + audio -> download .webm ---------- */
+const recBtn=document.getElementById("rec");
+let recorder=null, chunks=[], actx=null, srcNode=null, destNode=null;
+function pickMime(){ if(!window.MediaRecorder) return null;
+  const t=["video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm;codecs=h264","video/webm"];
+  for(const m of t) if(MediaRecorder.isTypeSupported(m)) return m; return ""; }
+function startRecord(){
+  if(!audio){ recBtn.textContent="REC (no audio)"; return; }
+  try{
+    if(!actx){ actx=new (window.AudioContext||window.webkitAudioContext)();
+      srcNode=actx.createMediaElementSource(audio); destNode=actx.createMediaStreamDestination();
+      srcNode.connect(actx.destination); srcNode.connect(destNode); }
+    if(actx.state==="suspended") actx.resume();
+    const vstream=cv.captureStream(30);
+    const mixed=new MediaStream(vstream.getVideoTracks().concat(destNode.stream.getAudioTracks()));
+    const m=pickMime(); chunks=[];
+    recorder=new MediaRecorder(mixed, m?{mimeType:m, videoBitsPerSecond:14000000}:undefined);
+    recorder.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); };
+    recorder.onstop=()=>{ recBtn.classList.remove("on"); recBtn.textContent="\u25cf REC";
+      const blob=new Blob(chunks,{type:"video/webm"}); const a=document.createElement("a");
+      a.href=URL.createObjectURL(blob); a.download="the-sun-station-ascii.webm";
+      document.body.appendChild(a); a.click(); a.remove(); };
+    audio.currentTime=0; const wasRunning=running; running=true; t0=performance.now();
+    if(!wasRunning) requestAnimationFrame(frame);
+    audio.play().then(()=>{ recorder.start(1000); recBtn.classList.add("on"); recBtn.textContent="\u25cf REC\u2026"; });
+    audio.addEventListener("ended",()=>{ if(recorder&&recorder.state!=="inactive") recorder.stop(); },{once:true});
+  }catch(e){ recBtn.textContent="REC-ERR"; }
+}
+recBtn.addEventListener("click",e=>{ e.stopPropagation(); startRecord(); });
+window.__record=startRecord;
+window.addEventListener("resize",resize);
+resize();
+(function(){ var q; try{ q=new URLSearchParams(location.search); }catch(e){ document.title="QP:"+e.message; return; }
+  var f=parseFloat(q.get("fs")); if(isFinite(f)&&f>0){ FS_OVERRIDE=f; resize(); }   // ?fs=7 -> finer/denser grid
+  if(q.get("export")){ document.getElementById("gate").style.display="none"; document.getElementById("rec").style.display="none";
+    title.classList.add("show"); window.__exportFrame(parseFloat(q.get("t"))||0); return; }
+  var s=parseFloat(q.get("shot"));
+  if(isFinite(s)){ try{ document.getElementById("gate").style.display="none";
+    title.classList.add("show"); hud.classList.add("show"); bigtitle.style.opacity=titleOpacity(s).toFixed(3); render(s);
+    var nz=0; for(var i=0;i<cols*rows;i++) if(val[i]>0.02) nz++;
+    document.title="NZ:"+nz+" cols:"+cols+" rows:"+rows+" W:"+W+" H:"+H; }catch(e){ document.title="REND:"+e.message; } return; }
+  render(6); })();
+</script>
+</body>
+</html>

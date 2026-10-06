@@ -1,0 +1,14 @@
+# --- media (copyrighted / large) ---
+*.mp3
+*.mp4
+*.webm
+
+# --- build product (self-contained, embeds the music) ---
+太阳站-ASCII舷窗.html
+
+# --- build & process artifacts ---
+tools/frames/
+tools/shots/
+tools/__pycache__/
+tools/_dump_*.txt
+*.log
